@@ -1,11 +1,28 @@
 import { useState } from "react";
+import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import "leaflet/dist/leaflet.css";
 import "./Weather.css";
+
+// Fix for default marker icon in React Leaflet
+import L from "leaflet";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
+
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
+});
 
 const Weather = () => {
   const [city, setCity] = useState("");
   const [weatherData, setWeatherData] = useState(null);
+  const [tideData, setTideData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Get coordinates from city name using OpenStreetMap Nominatim
   const getCoordinates = async (cityName) => {
@@ -77,12 +94,50 @@ const Weather = () => {
     return "🌡️";
   };
 
+  // Fetch tide data from WorldTides API
+  const fetchTideData = async (lat, lon) => {
+    try {
+      // Using WorldTides free API (no key needed for basic data)
+      const today = new Date();
+      const start = Math.floor(today.getTime() / 1000);
+      const end = start + 86400 * 2; // Next 48 hours
+
+      const response = await fetch(
+        `https://www.worldtides.info/api/v3?extremes&lat=${lat}&lon=${lon}&start=${start}&length=${86400 * 2}`
+      );
+
+      if (!response.ok) {
+        // If WorldTides doesn't work, return null (tide data is optional)
+        return null;
+      }
+
+      const data = await response.json();
+
+      if (!data.extremes || data.extremes.length === 0) {
+        return null;
+      }
+
+      // Process tide extremes (highs and lows)
+      const tides = data.extremes.map((extreme) => ({
+        type: extreme.type === "High" ? "High Tide" : "Low Tide",
+        height: extreme.height,
+        time: new Date(extreme.dt * 1000),
+      }));
+
+      return tides.slice(0, 6); // Return next 6 tide events
+    } catch (error) {
+      console.log("Tide data unavailable:", error.message);
+      return null;
+    }
+  };
+
   const fetchWeather = async (e) => {
     e.preventDefault();
 
     setLoading(true);
     setError("");
     setWeatherData(null);
+    setTideData(null);
 
     try {
       // Use Marseille as default if no city is entered
@@ -104,6 +159,8 @@ const Weather = () => {
 
       setWeatherData({
         location: location.name,
+        lat: location.lat,
+        lon: location.lon,
         temperature: weatherData.current.temperature_2m,
         feelsLike: weatherData.current.apparent_temperature,
         humidity: weatherData.current.relative_humidity_2m,
@@ -117,6 +174,10 @@ const Weather = () => {
           weatherData.current.is_day
         ),
       });
+
+      // Fetch tide data (optional, won't fail if unavailable)
+      const tides = await fetchTideData(location.lat, location.lon);
+      setTideData(tides);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -148,6 +209,35 @@ const Weather = () => {
       {weatherData && (
         <div className="weather-result">
           <h2>{weatherData.location}</h2>
+
+          <div className="map-container">
+            <button
+              className="fullscreen-button"
+              onClick={() => setIsFullscreen(true)}
+              title="Open map in fullscreen"
+            >
+              🗺️ Fullscreen
+            </button>
+            <MapContainer
+              center={[weatherData.lat, weatherData.lon]}
+              zoom={10}
+              style={{ height: "300px", width: "100%", borderRadius: "12px" }}
+              key={`${weatherData.lat}-${weatherData.lon}`}
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <Marker position={[weatherData.lat, weatherData.lon]}>
+                <Popup>
+                  <strong>{weatherData.location}</strong>
+                  <br />
+                  {Math.round(weatherData.temperature)}°C - {weatherData.description}
+                </Popup>
+              </Marker>
+            </MapContainer>
+          </div>
+
           <div className="weather-info">
             <div className="weather-main">
               <div className="weather-icon">{weatherData.icon}</div>
@@ -172,6 +262,71 @@ const Weather = () => {
                 <span className="detail-value">{Math.round(weatherData.pressure)} hPa</span>
               </div>
             </div>
+          </div>
+
+          {/* Tide Information */}
+          {tideData && tideData.length > 0 && (
+            <div className="tide-section">
+              <h3>🌊 Tide Times</h3>
+              <div className="tide-list">
+                {tideData.map((tide, index) => (
+                  <div
+                    key={index}
+                    className={`tide-item ${tide.type === "High Tide" ? "high-tide" : "low-tide"}`}
+                  >
+                    <div className="tide-type">
+                      {tide.type === "High Tide" ? "⬆️" : "⬇️"} {tide.type}
+                    </div>
+                    <div className="tide-time">
+                      {tide.time.toLocaleTimeString("en-US", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </div>
+                    <div className="tide-date">
+                      {tide.time.toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </div>
+                    <div className="tide-height">{tide.height.toFixed(2)}m</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Fullscreen Map Modal */}
+      {isFullscreen && weatherData && (
+        <div className="fullscreen-modal" onClick={() => setIsFullscreen(false)}>
+          <div className="fullscreen-content" onClick={(e) => e.stopPropagation()}>
+            <button
+              className="close-button"
+              onClick={() => setIsFullscreen(false)}
+              title="Close fullscreen"
+            >
+              ✕
+            </button>
+            <MapContainer
+              center={[weatherData.lat, weatherData.lon]}
+              zoom={12}
+              style={{ height: "100%", width: "100%" }}
+              key={`fullscreen-${weatherData.lat}-${weatherData.lon}`}
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              <Marker position={[weatherData.lat, weatherData.lon]}>
+                <Popup>
+                  <strong>{weatherData.location}</strong>
+                  <br />
+                  {Math.round(weatherData.temperature)}°C - {weatherData.description}
+                </Popup>
+              </Marker>
+            </MapContainer>
           </div>
         </div>
       )}
